@@ -448,7 +448,7 @@ function Invia-Discord($Messaggio) {
                 return $false
             }
             if ($codice -eq 401 -or $codice -eq 403 -or $codice -eq 404) {
-                throw "il link del webhook non funziona (errore $codice). Forse il webhook e' stato eliminato: creane uno nuovo e mettilo in config-bot.json."
+                throw "il link del webhook non funziona (errore $codice). Forse il webhook e' stato eliminato: creane uno nuovo e aggiorna il link (in config-bot.json sul PC, o nel segreto DISCORD_WEBHOOK_URL su GitHub)."
             }
             Scrivi-Log "Discord non risponde (tentativo $tentativo di 5): $($_.Exception.Message)" 'Yellow'
             Start-Sleep -Seconds (5 * $tentativo)
@@ -499,6 +499,25 @@ function Imposta-Webhook {
     catch { Scrivi-Log "Non riesco a scrivere su Discord: $($_.Exception.Message)" 'Red'; return $false }
     Scrivi-Log 'Webhook salvato in config-bot.json e messaggio di benvenuto inviato.' 'Green'
     return $true
+}
+
+# Chiede a Discord se il webhook esiste e in quale canale scrive. Non pubblica niente.
+function Verifica-Webhook {
+    try {
+        $r = Invoke-WebRequest -Uri ([string]$script:Config.webhook_url) -UseBasicParsing -UserAgent $UserAgent -TimeoutSec 30
+        $w = ConvertFrom-Json ($Utf8.GetString($r.RawContentStream.ToArray()))
+        Scrivi-Log ('Webhook Discord OK: "{0}" (canale {1})' -f $w.name, $w.channel_id) 'Green'
+        return $true
+    } catch {
+        $codice = 0
+        if ($_.Exception.Response) { $codice = [int]$_.Exception.Response.StatusCode }
+        if ($codice -eq 401 -or $codice -eq 403 -or $codice -eq 404) {
+            Scrivi-Log "Il link del webhook non funziona (errore $codice): forse il webhook e' stato eliminato. Creane uno nuovo su Discord e aggiorna il link." 'Red'
+            return $false
+        }
+        Scrivi-Log "Non riesco a controllare il webhook adesso ($($_.Exception.Message)): vado avanti lo stesso." 'Yellow'
+        return $true
+    }
 }
 
 
@@ -596,14 +615,18 @@ if (-not $Prova -and -not (Webhook-Valido ([string]$script:Config.webhook_url)))
         exit 1
     }
 }
+if (-not $Prova -and -not (Verifica-Webhook)) { exit 1 }
 
 $attive = @($script:Config.fonti | Where-Object { $_.attiva } | ForEach-Object { $_.id }) -join ', '
 Scrivi-Log "Fonti attive: $attive" 'Cyan'
 
+$erroreGiro = $false
 while ($true) {
-    try { Esegui-Giro } catch { Scrivi-Log "Errore: $($_.Exception.Message)" 'Red' }
+    try { Esegui-Giro } catch { Scrivi-Log "Errore: $($_.Exception.Message)" 'Red'; $erroreGiro = $true }
     if ($Prova -or $UnaVolta) { break }
     $minuti = [Math]::Max(5, [int]$script:Config.minuti_tra_controlli)
     Scrivi-Log "Prossimo controllo tra $minuti minuti. Per fermare il bot chiudi questa finestra." 'DarkGray'
     Start-Sleep -Seconds ($minuti * 60)
 }
+# Su GitHub un errore rende il giro "rosso": cosi' GitHub ti avvisa per email
+if ($UnaVolta -and $erroreGiro) { exit 1 }
