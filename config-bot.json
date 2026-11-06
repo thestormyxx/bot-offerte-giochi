@@ -1,0 +1,51 @@
+{
+  "webhook_url": "",
+  "nome_bot": "",
+  "avatar_url": "",
+  "minuti_tra_controlli": 15,
+  "primi_post_per_fonte": 3,
+  "massimo_post_per_giro": 10,
+  "ignora_piu_vecchi_di_giorni": 7,
+  "fonti": [
+    {
+      "id": "offerte",
+      "attiva": true,
+      "tipo": "offerta",
+      "etichetta": "💸 OFFERTA",
+      "colore": "#2ECC71",
+      "indirizzo": "https://www.allkeyshop.com/blog/category/news/deals-by-allkeyshop/feed/"
+    },
+    {
+      "id": "gratis",
+      "attiva": true,
+      "tipo": "articolo",
+      "etichetta": "🆓 GIOCO GRATIS",
+      "colore": "#F1C40F",
+      "indirizzo": "https://www.allkeyshop.com/blog/category/news/stay-up-to-date-free-video-games/feed/"
+    },
+    {
+      "id": "giveaway",
+      "attiva": true,
+      "tipo": "articolo",
+      "etichetta": "🎁 GIVEAWAY",
+      "colore": "#9B59B6",
+      "indirizzo": "https://www.allkeyshop.com/blog/category/news/giveaway/feed/"
+    },
+    {
+      "id": "vetrina",
+      "attiva": true,
+      "tipo": "vetrina",
+      "etichetta": "⭐ IN EVIDENZA",
+      "colore": "#E67E22",
+      "indirizzo": "https://www.allkeyshop.com/blog/"
+    },
+    {
+      "id": "abbonamenti",
+      "attiva": false,
+      "tipo": "articolo",
+      "etichetta": "📦 ABBONAMENTI (Game Pass, PS Plus, Prime)",
+      "colore": "#3498DB",
+      "indirizzo": "https://www.allkeyshop.com/blog/category/news/subscriptions-stay-updated-games-deals/feed/"
+    }
+  ]
+}
