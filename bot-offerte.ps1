@@ -48,6 +48,8 @@ $script:Avviate         = New-Object 'System.Collections.Generic.List[string]'
 $script:RotUltima       = [DateTimeOffset]::MinValue   # quando e' uscita l'ultima offerta a rotazione
 $script:RotIndice       = 0                            # quale elenco del catalogo leggere la prossima volta
 $script:RotGiochi       = @{}                          # link del gioco -> quando e' uscito a rotazione
+$script:VetUltima       = [DateTimeOffset]::MinValue   # quando e' stato ripubblicato l'ultimo gioco in evidenza
+$script:VetIndice       = 0                            # quale gioco in evidenza ripubblicare la prossima volta
 
 
 # =============================================================== UTILITA'
@@ -147,6 +149,10 @@ function Carica-Stato {
         $s = ConvertFrom-Json ([IO.File]::ReadAllText($FileStato, $Utf8))
         if ($s.visti) { foreach ($v in $s.visti) { Segna-Visto ([string]$v) } }
         if ($s.fonti_avviate) { foreach ($f in $s.fonti_avviate) { $script:Avviate.Add([string]$f) } }
+        if ($s.vetrina) {
+            if ($s.vetrina.ultima) { $script:VetUltima = [DateTimeOffset]::Parse([string]$s.vetrina.ultima, $Invariante) }
+            if ($s.vetrina.indice) { $script:VetIndice = [int]$s.vetrina.indice }
+        }
         if ($s.rotazione) {
             if ($s.rotazione.ultima) { $script:RotUltima = [DateTimeOffset]::Parse([string]$s.rotazione.ultima, $Invariante) }
             if ($s.rotazione.indice) { $script:RotIndice = [int]$s.rotazione.indice }
@@ -167,10 +173,13 @@ function Salva-Stato {
     }
     $ultima = ''
     if ($script:RotUltima -gt [DateTimeOffset]::MinValue) { $ultima = $script:RotUltima.ToString('o', $Invariante) }
+    $ultimaVet = ''
+    if ($script:VetUltima -gt [DateTimeOffset]::MinValue) { $ultimaVet = $script:VetUltima.ToString('o', $Invariante) }
     $json = [pscustomobject]@{
         visti         = $script:Visti.ToArray()
         fonti_avviate = $script:Avviate.ToArray()
         rotazione     = [pscustomobject]@{ ultima = $ultima; indice = $script:RotIndice; giochi = $script:RotGiochi }
+        vetrina       = [pscustomobject]@{ ultima = $ultimaVet; indice = $script:VetIndice }
     } | ConvertTo-Json -Depth 4
     $tmp = $FileStato + '.tmp'
     [IO.File]::WriteAllText($tmp, $json, $Utf8)
@@ -627,43 +636,90 @@ function Giro-Rotazione($Fonte) {
             $script:RotGiochi.Remove($k)
         }
     }
+    $riserva = New-Object System.Collections.Generic.List[object]   # giochi adatti ma gia' usciti di recente
     for ($tentativo = 1; $tentativo -le 3; $tentativo++) {
         $url = [string]$pagine[$script:RotIndice % $pagine.Count]
         $script:RotIndice = ($script:RotIndice + 1) % 100000
         try { $giochi = @(Leggi-Catalogo $url) }
         catch { Scrivi-Log "[$($Fonte.id)] non riesco a leggere $url : $($_.Exception.Message)" 'Yellow'; continue }
-        $scelto = $giochi | Where-Object {
+        $adatti = @($giochi | Where-Object {
             $_.Disponibile -and $_.Link -and ((Leggi-Numero $_.Prezzo) -gt 0) -and
-            ((Leggi-Numero $_.Sconto) -ge $minimo) -and ($_.Nome -notmatch '\bAccount\b') -and
-            (-not $script:RotGiochi.ContainsKey($_.Link))
-        } | Sort-Object -Property @{ Expression = { Leggi-Numero $_.Sconto } } -Descending | Select-Object -First 1
-        if (-not $scelto) {
-            Scrivi-Log "[$($Fonte.id)] in $url nessun gioco nuovo abbastanza scontato, provo il prossimo elenco"
-            continue
-        }
-        Scrivi-Log ("[{0}] offerta a rotazione: {1} ({2}, {3})" -f $Fonte.id, $scelto.Nome, (Formatta-Prezzo $scelto.Prezzo), (Formatta-Sconto $scelto.Sconto)) 'White'
-        $messaggio = Messaggio-Rotazione $Fonte $scelto
-        if ($Prova) { Mostra-Anteprima $messaggio; return }
-        [void](Invia-Discord $messaggio)
-        $script:RotUltima = [DateTimeOffset]::Now
-        $script:RotGiochi[$scelto.Link] = [DateTimeOffset]::Now.ToString('o', $Invariante)
-        Salva-Stato
+            ((Leggi-Numero $_.Sconto) -ge $minimo) -and ($_.Nome -notmatch '\bAccount\b')
+        })
+        $scelto = $adatti | Where-Object { -not $script:RotGiochi.ContainsKey($_.Link) } |
+                  Sort-Object -Property @{ Expression = { Leggi-Numero $_.Sconto } } -Descending | Select-Object -First 1
+        if ($scelto) { Pubblica-Rotazione $Fonte $scelto 'offerta a rotazione'; return }
+        foreach ($g in $adatti) { $riserva.Add($g) }
+        Scrivi-Log "[$($Fonte.id)] in $url nessun gioco nuovo abbastanza scontato, provo il prossimo elenco"
+    }
+    # Finiti i giochi nuovi: ripubblico quello uscito da piu' tempo, cosi' il canale non resta mai fermo
+    if ($riserva.Count) {
+        $scelto = $riserva | Sort-Object -Property @{ Expression = {
+            $d = [DateTimeOffset]::MinValue
+            [void][DateTimeOffset]::TryParse([string]$script:RotGiochi[$_.Link], $Invariante, [Globalization.DateTimeStyles]::None, [ref]$d)
+            $d
+        } } | Select-Object -First 1
+        Pubblica-Rotazione $Fonte $scelto 'giochi nuovi finiti, ripubblico quello uscito da piu tempo'
         return
     }
     Salva-Stato
+}
+
+function Pubblica-Rotazione($Fonte, $Gioco, [string]$Motivo) {
+    Scrivi-Log ("[{0}] {1}: {2} ({3}, {4})" -f $Fonte.id, $Motivo, $Gioco.Nome, (Formatta-Prezzo $Gioco.Prezzo), (Formatta-Sconto $Gioco.Sconto)) 'White'
+    $messaggio = Messaggio-Rotazione $Fonte $Gioco
+    if ($Prova) { Mostra-Anteprima $messaggio; return }
+    [void](Invia-Discord $messaggio)
+    $script:RotUltima = [DateTimeOffset]::Now
+    $script:RotGiochi[$Gioco.Link] = [DateTimeOffset]::Now.ToString('o', $Invariante)
+    Salva-Stato
+}
+
+# Giochi in evidenza ripetuti: ogni tot minuti ripubblica uno dei giochi della vetrina della home,
+# a giro e con il prezzo aggiornato ("ripeti_ogni_minuti" nella fonte vetrina; 0 = mai)
+function Giro-VetrinaRipetuta($Fonte, $Voci) {
+    $ogni = [int]$Fonte.ripeti_ogni_minuti
+    $voci = @($Voci)
+    if ($ogni -le 0 -or $voci.Count -eq 0) { return }
+    $ogni = [Math]::Max(5, $ogni)
+    $passati = ([DateTimeOffset]::Now - $script:VetUltima).TotalMinutes
+    if (-not $Prova -and $passati -lt ($ogni - 3)) {
+        Scrivi-Log ("[{0}] prossimo gioco in evidenza ripetuto tra circa {1} minuti" -f $Fonte.id, [int][Math]::Ceiling($ogni - $passati))
+        return
+    }
+    $voce = $voci[$script:VetIndice % $voci.Count]
+    $script:VetIndice = ($script:VetIndice + 1) % 100000
+    Scrivi-Log ("[{0}] gioco in evidenza ripetuto: {1}" -f $Fonte.id, $voce.Titolo) 'White'
+    $messaggio = Messaggio-Vetrina $Fonte $voce
+    if ($Prova) { Mostra-Anteprima $messaggio; return }
+    [void](Invia-Discord $messaggio)
+    $script:VetUltima = [DateTimeOffset]::Now
+    Salva-Stato
+}
+
+# Pubblicazioni a tempo, dopo le novita': giochi in evidenza ripetuti e offerte a rotazione
+function Giri-Extra($Rotazione, $FonteVetrina, $VociVetrina) {
+    if ($FonteVetrina) { Giro-VetrinaRipetuta $FonteVetrina $VociVetrina }
+    if ($Rotazione) { Giro-Rotazione $Rotazione }
 }
 
 function Esegui-Giro {
     $script:Config = Leggi-Config
     $coda = New-Object System.Collections.Generic.List[object]
     $rotazione = $null
+    $fonteVetrina = $null
+    $vociVetrina = @()
 
     foreach ($fonte in @($script:Config.fonti)) {
         if (-not $fonte -or -not $fonte.attiva) { continue }
         if ($fonte.tipo -eq 'rotazione') { $rotazione = $fonte; continue }
         $id = [string]$fonte.id
         try {
-            if ($fonte.tipo -eq 'vetrina') { $voci = @(Leggi-Vetrina ([string]$fonte.indirizzo)) }
+            if ($fonte.tipo -eq 'vetrina') {
+                $voci = @(Leggi-Vetrina ([string]$fonte.indirizzo))
+                $fonteVetrina = $fonte
+                $vociVetrina = $voci
+            }
             else { $voci = @(Leggi-Feed ([string]$fonte.indirizzo)) }
         } catch {
             Scrivi-Log "[$id] non riesco a leggere la fonte: $($_.Exception.Message)" 'Yellow'
@@ -689,7 +745,7 @@ function Esegui-Giro {
 
     if ($coda.Count -eq 0) {
         Scrivi-Log 'Nessuna novita.'
-        if ($rotazione) { Giro-Rotazione $rotazione }
+        Giri-Extra $rotazione $fonteVetrina $vociVetrina
         return
     }
     $massimo = [Math]::Max(1, [int]$script:Config.massimo_post_per_giro)
@@ -720,7 +776,7 @@ function Esegui-Giro {
         [IO.File]::WriteAllText($file, ($anteprime.ToArray() | ConvertTo-Json -Depth 12), $Utf8)
         Scrivi-Log "Messaggi completi (formato Discord) salvati in: $file" 'DarkGray'
     }
-    if ($rotazione) { Giro-Rotazione $rotazione }
+    Giri-Extra $rotazione $fonteVetrina $vociVetrina
 }
 
 

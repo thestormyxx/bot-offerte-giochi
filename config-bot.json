@@ -37,6 +37,7 @@
       "tipo": "vetrina",
       "etichetta": "⭐ IN EVIDENZA",
       "colore": "#E67E22",
+      "ripeti_ogni_minuti": 60,
       "indirizzo": "https://www.allkeyshop.com/blog/"
     },
     {
@@ -72,7 +73,17 @@
         "https://www.allkeyshop.com/blog/games/nintendo-switch-games/",
         "https://www.allkeyshop.com/blog/games/action/",
         "https://www.allkeyshop.com/blog/games/strategy/",
-        "https://www.allkeyshop.com/blog/games/simulation/"
+        "https://www.allkeyshop.com/blog/games/simulation/",
+        "https://www.allkeyshop.com/blog/games/?pagenum=6",
+        "https://www.allkeyshop.com/blog/games/?pagenum=7",
+        "https://www.allkeyshop.com/blog/games/?pagenum=8",
+        "https://www.allkeyshop.com/blog/games/?pagenum=9",
+        "https://www.allkeyshop.com/blog/games/?pagenum=10",
+        "https://www.allkeyshop.com/blog/games/?pagenum=11",
+        "https://www.allkeyshop.com/blog/games/?pagenum=12",
+        "https://www.allkeyshop.com/blog/games/?pagenum=13",
+        "https://www.allkeyshop.com/blog/games/?pagenum=14",
+        "https://www.allkeyshop.com/blog/games/?pagenum=15"
       ]
     }
   ]
