@@ -46,6 +46,34 @@
       "etichetta": "📦 ABBONAMENTI (Game Pass, PS Plus, Prime)",
       "colore": "#3498DB",
       "indirizzo": "https://www.allkeyshop.com/blog/category/news/subscriptions-stay-updated-games-deals/feed/"
+    },
+    {
+      "id": "rotazione",
+      "attiva": true,
+      "tipo": "rotazione",
+      "etichetta": "🔥 OFFERTA DEL MOMENTO",
+      "colore": "#E74C3C",
+      "ogni_minuti": 30,
+      "sconto_minimo": 25,
+      "ripeti_dopo_giorni": 7,
+      "pagine": [
+        "https://www.allkeyshop.com/blog/games/",
+        "https://www.allkeyshop.com/blog/games/under-10-eur/",
+        "https://www.allkeyshop.com/blog/games/?pagenum=2",
+        "https://www.allkeyshop.com/blog/games/new-releases/",
+        "https://www.allkeyshop.com/blog/games/pc-games/",
+        "https://www.allkeyshop.com/blog/games/?pagenum=3",
+        "https://www.allkeyshop.com/blog/games/under-5-eur/",
+        "https://www.allkeyshop.com/blog/games/ps5-games/",
+        "https://www.allkeyshop.com/blog/games/?pagenum=4",
+        "https://www.allkeyshop.com/blog/games/rpg/",
+        "https://www.allkeyshop.com/blog/games/xbox-series-games/",
+        "https://www.allkeyshop.com/blog/games/?pagenum=5",
+        "https://www.allkeyshop.com/blog/games/nintendo-switch-games/",
+        "https://www.allkeyshop.com/blog/games/action/",
+        "https://www.allkeyshop.com/blog/games/strategy/",
+        "https://www.allkeyshop.com/blog/games/simulation/"
+      ]
     }
   ]
 }

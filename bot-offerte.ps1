@@ -45,6 +45,9 @@ $script:BottoniOk       = $true
 $script:Visti           = New-Object 'System.Collections.Generic.List[string]'
 $script:VistiSet        = New-Object 'System.Collections.Generic.HashSet[string]'
 $script:Avviate         = New-Object 'System.Collections.Generic.List[string]'
+$script:RotUltima       = [DateTimeOffset]::MinValue   # quando e' uscita l'ultima offerta a rotazione
+$script:RotIndice       = 0                            # quale elenco del catalogo leggere la prossima volta
+$script:RotGiochi       = @{}                          # link del gioco -> quando e' uscito a rotazione
 
 
 # =============================================================== UTILITA'
@@ -144,6 +147,13 @@ function Carica-Stato {
         $s = ConvertFrom-Json ([IO.File]::ReadAllText($FileStato, $Utf8))
         if ($s.visti) { foreach ($v in $s.visti) { Segna-Visto ([string]$v) } }
         if ($s.fonti_avviate) { foreach ($f in $s.fonti_avviate) { $script:Avviate.Add([string]$f) } }
+        if ($s.rotazione) {
+            if ($s.rotazione.ultima) { $script:RotUltima = [DateTimeOffset]::Parse([string]$s.rotazione.ultima, $Invariante) }
+            if ($s.rotazione.indice) { $script:RotIndice = [int]$s.rotazione.indice }
+            if ($s.rotazione.giochi) {
+                foreach ($p in $s.rotazione.giochi.PSObject.Properties) { $script:RotGiochi[$p.Name] = [string]$p.Value }
+            }
+        }
     } catch {
         Scrivi-Log 'stato.json non leggibile: riparto da zero (potrei ripubblicare qualche gioco).' 'Yellow'
     }
@@ -155,10 +165,13 @@ function Salva-Stato {
         [void]$script:VistiSet.Remove($script:Visti[0])
         $script:Visti.RemoveAt(0)
     }
+    $ultima = ''
+    if ($script:RotUltima -gt [DateTimeOffset]::MinValue) { $ultima = $script:RotUltima.ToString('o', $Invariante) }
     $json = [pscustomobject]@{
         visti         = $script:Visti.ToArray()
         fonti_avviate = $script:Avviate.ToArray()
-    } | ConvertTo-Json -Depth 3
+        rotazione     = [pscustomobject]@{ ultima = $ultima; indice = $script:RotIndice; giochi = $script:RotGiochi }
+    } | ConvertTo-Json -Depth 4
     $tmp = $FileStato + '.tmp'
     [IO.File]::WriteAllText($tmp, $json, $Utf8)
     Move-Item -LiteralPath $tmp -Destination $FileStato -Force
@@ -241,6 +254,56 @@ function Leggi-Vetrina([string]$Url) {
     }
     if ($voci.Count -eq 0) { throw 'la vetrina della home e'' vuota: forse il sito e'' cambiato' }
     return $voci
+}
+
+# Legge un valore annidato dai dati del catalogo senza errori se manca qualcosa
+function Prendi($Oggetto, [string[]]$Chiavi) {
+    $x = $Oggetto
+    foreach ($k in $Chiavi) {
+        if ($null -eq $x -or -not ($x -is [System.Collections.IDictionary]) -or -not $x.ContainsKey($k)) { return $null }
+        $x = $x[$k]
+    }
+    return $x
+}
+
+# Un elenco del catalogo Allkeyshop (es. /blog/games/): 24 giochi con miglior prezzo e sconto,
+# gia' scritti dentro la pagina. Non uso la loro /api, che il robots.txt chiede di non toccare.
+function Leggi-Catalogo([string]$Url) {
+    $html = Scarica-Pagina $Url
+    $segno = 'var cataloginitjs = '
+    $i = $html.IndexOf($segno)
+    if ($i -lt 0) { throw 'non trovo i dati del catalogo nella pagina: forse il sito e'' cambiato' }
+    $i += $segno.Length
+    $f = $html.IndexOf('</script>', $i)
+    $testo = [regex]::Replace($html.Substring($i, $f - $i), '//# sourceURL=.*$', '', 'Singleline').Trim().TrimEnd(';').Trim()
+    Add-Type -AssemblyName System.Web.Extensions
+    $js = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $js.MaxJsonLength = [int]::MaxValue   # i dati sono piu' grandi del limite normale di PowerShell 5.1
+    $js.RecursionLimit = 200
+    $cache = Prendi ($js.DeserializeObject($testo)) 'appData', 'cachedQueries'
+    if (-not $cache) { throw 'dati del catalogo vuoti: forse il sito e'' cambiato' }
+    $giochi = New-Object System.Collections.Generic.List[object]
+    foreach ($k in @($cache.Keys)) {
+        foreach ($p in @(Prendi $cache[$k] 'products')) {
+            $o = @(Prendi $p 'offers')[0]
+            if (-not $o) { continue }
+            $basso = @(Prendi $p 'historical_low_offers')[0]
+            $giochi.Add([pscustomobject]@{
+                Nome        = (Pulisci-Testo ([string](Prendi $p 'name')))
+                Link        = [string](Prendi $p 'link')
+                Immagine    = [string](Prendi $p 'assets', 'capsule')
+                Piattaforma = [string](Prendi $p 'operating_system', 'name')
+                Prezzo      = (Prendi $o 'price')
+                Sconto      = (Prendi $o 'official_offer_reduction_percent')
+                Negozio     = [string](Prendi $o 'merchant', 'name')
+                Edizione    = [string](Prendi $o 'edition', 'name')
+                Codice      = [string](Prendi $o 'voucher', 'code')
+                Disponibile = ([string](Prendi $o 'stock_status') -eq 'in_stock')
+                Minimo      = (Prendi $basso 'price')
+            })
+        }
+    }
+    return $giochi
 }
 
 # Dentro un articolo di offerta trova il link alla pagina "confronta prezzi" del gioco giusto
@@ -393,6 +456,24 @@ function Messaggio-Vetrina($Fonte, $Voce) {
     return Nuovo-Messaggio $e @(Bottone 'Confronta i prezzi' $Voce.Link 0x1F6D2)
 }
 
+function Messaggio-Rotazione($Fonte, $Gioco) {
+    $voce = [pscustomobject]@{ Titolo = $Gioco.Nome; Link = $Gioco.Link; Data = [DateTimeOffset]::Now }
+    $e = Nuovo-Embed $Fonte $voce
+    $campi = New-Object System.Collections.Generic.List[object]
+    $v = '**' + (Formatta-Prezzo $Gioco.Prezzo) + '**'
+    if ($Gioco.Negozio) { $v += ' su ' + (Testo-Sicuro $Gioco.Negozio) }
+    $campi.Add((Campo ((Emoji 0x1F4B0) + ' Miglior prezzo') $v))
+    $sconto = Formatta-Sconto $Gioco.Sconto
+    if ($sconto) { $campi.Add((Campo ((Emoji 0x1F525) + ' Sconto') $sconto)) }
+    if ($Gioco.Piattaforma) { $campi.Add((Campo ((Emoji 0x1F3AE) + ' Piattaforma') (Testo-Sicuro $Gioco.Piattaforma))) }
+    if ($Gioco.Codice) { $campi.Add((Campo ((Emoji 0x1F3F7) + ' Codice sconto') ('`' + $Gioco.Codice + '`'))) }
+    if ($null -ne (Leggi-Numero $Gioco.Minimo)) { $campi.Add((Campo ((Emoji 0x1F4C9) + ' Minimo storico') (Formatta-Prezzo $Gioco.Minimo))) }
+    $e.fields = $campi.ToArray()
+    if ($Gioco.Edizione -and $Gioco.Edizione -ne 'Standard') { $e.description = 'Edizione: ' + (Testo-Sicuro $Gioco.Edizione) }
+    if ($Gioco.Immagine) { $e.image = @{ url = $Gioco.Immagine } }
+    return Nuovo-Messaggio $e @(Bottone 'Confronta i prezzi' $Gioco.Link 0x1F6D2)
+}
+
 function Prepara-Messaggio($Fonte, $Voce) {
     if ($Fonte.tipo -eq 'vetrina') { return Messaggio-Vetrina $Fonte $Voce }
     if ($Fonte.tipo -eq 'offerta') {
@@ -523,12 +604,63 @@ function Verifica-Webhook {
 
 # =============================================================== GIRO DI CONTROLLO
 
+# Offerte a rotazione: ogni tot minuti pubblica il gioco piu' scontato di un elenco del catalogo,
+# girando tra gli elenchi e senza ripetere lo stesso gioco per qualche giorno.
+function Giro-Rotazione($Fonte) {
+    $ogni = [Math]::Max(5, [int]$Fonte.ogni_minuti)
+    $passati = ([DateTimeOffset]::Now - $script:RotUltima).TotalMinutes
+    # 3 minuti di tolleranza: i giri su GitHub non partono mai all'orario esatto
+    if (-not $Prova -and $passati -lt ($ogni - 3)) {
+        Scrivi-Log ("[{0}] prossima offerta a rotazione tra circa {1} minuti" -f $Fonte.id, [int][Math]::Ceiling($ogni - $passati))
+        return
+    }
+    $pagine = @($Fonte.pagine | Where-Object { $_ })
+    if ($pagine.Count -eq 0) { return }
+    $minimo = 0.0
+    if ($null -ne (Leggi-Numero $Fonte.sconto_minimo)) { $minimo = Leggi-Numero $Fonte.sconto_minimo }
+    $giorni = [Math]::Max(1, [int]$Fonte.ripeti_dopo_giorni)
+    # I giochi usciti piu' di N giorni fa possono tornare
+    $limite = [DateTimeOffset]::Now.AddDays(-$giorni)
+    foreach ($k in @($script:RotGiochi.Keys)) {
+        $d = [DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse([string]$script:RotGiochi[$k], $Invariante, [Globalization.DateTimeStyles]::None, [ref]$d) -or $d -lt $limite) {
+            $script:RotGiochi.Remove($k)
+        }
+    }
+    for ($tentativo = 1; $tentativo -le 3; $tentativo++) {
+        $url = [string]$pagine[$script:RotIndice % $pagine.Count]
+        $script:RotIndice = ($script:RotIndice + 1) % 100000
+        try { $giochi = @(Leggi-Catalogo $url) }
+        catch { Scrivi-Log "[$($Fonte.id)] non riesco a leggere $url : $($_.Exception.Message)" 'Yellow'; continue }
+        $scelto = $giochi | Where-Object {
+            $_.Disponibile -and $_.Link -and ((Leggi-Numero $_.Prezzo) -gt 0) -and
+            ((Leggi-Numero $_.Sconto) -ge $minimo) -and ($_.Nome -notmatch '\bAccount\b') -and
+            (-not $script:RotGiochi.ContainsKey($_.Link))
+        } | Sort-Object -Property @{ Expression = { Leggi-Numero $_.Sconto } } -Descending | Select-Object -First 1
+        if (-not $scelto) {
+            Scrivi-Log "[$($Fonte.id)] in $url nessun gioco nuovo abbastanza scontato, provo il prossimo elenco"
+            continue
+        }
+        Scrivi-Log ("[{0}] offerta a rotazione: {1} ({2}, {3})" -f $Fonte.id, $scelto.Nome, (Formatta-Prezzo $scelto.Prezzo), (Formatta-Sconto $scelto.Sconto)) 'White'
+        $messaggio = Messaggio-Rotazione $Fonte $scelto
+        if ($Prova) { Mostra-Anteprima $messaggio; return }
+        [void](Invia-Discord $messaggio)
+        $script:RotUltima = [DateTimeOffset]::Now
+        $script:RotGiochi[$scelto.Link] = [DateTimeOffset]::Now.ToString('o', $Invariante)
+        Salva-Stato
+        return
+    }
+    Salva-Stato
+}
+
 function Esegui-Giro {
     $script:Config = Leggi-Config
     $coda = New-Object System.Collections.Generic.List[object]
+    $rotazione = $null
 
     foreach ($fonte in @($script:Config.fonti)) {
         if (-not $fonte -or -not $fonte.attiva) { continue }
+        if ($fonte.tipo -eq 'rotazione') { $rotazione = $fonte; continue }
         $id = [string]$fonte.id
         try {
             if ($fonte.tipo -eq 'vetrina') { $voci = @(Leggi-Vetrina ([string]$fonte.indirizzo)) }
@@ -555,7 +687,11 @@ function Esegui-Giro {
     }
     Salva-Stato
 
-    if ($coda.Count -eq 0) { Scrivi-Log 'Nessuna novita.'; return }
+    if ($coda.Count -eq 0) {
+        Scrivi-Log 'Nessuna novita.'
+        if ($rotazione) { Giro-Rotazione $rotazione }
+        return
+    }
     $massimo = [Math]::Max(1, [int]$script:Config.massimo_post_per_giro)
     $lista = @($coda | Sort-Object -Property { $_.Voce.Data } | Select-Object -First $massimo)
     if ($coda.Count -gt $lista.Count) {
@@ -584,6 +720,7 @@ function Esegui-Giro {
         [IO.File]::WriteAllText($file, ($anteprime.ToArray() | ConvertTo-Json -Depth 12), $Utf8)
         Scrivi-Log "Messaggi completi (formato Discord) salvati in: $file" 'DarkGray'
     }
+    if ($rotazione) { Giro-Rotazione $rotazione }
 }
 
 
