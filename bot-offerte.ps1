@@ -636,6 +636,40 @@ function Giro-Rotazione($Fonte) {
             $script:RotGiochi.Remove($k)
         }
     }
+    # GitHub spesso parte in ritardo: recupero le offerte arretrate (massimo 3 per giro)
+    $quante = 1
+    if (-not $Prova) { $quante = Quante-Arretrate $script:RotUltima $ogni }
+    if ($quante -gt 1) { Scrivi-Log "[$($Fonte.id)] giro in ritardo: recupero $quante offerte" }
+    $fatte = 0
+    for ($n = 1; $n -le $quante; $n++) {
+        if (-not (Una-Rotazione $Fonte $pagine $minimo)) { break }
+        $fatte++
+        if ($Prova) { break }
+        if ($n -lt $quante) { Start-Sleep -Seconds 2 }
+    }
+    if ($fatte -gt 0 -and -not $Prova) { $script:RotUltima = Avanza-Orario $script:RotUltima $ogni $fatte }
+    Salva-Stato
+}
+
+# Quante pubblicazioni sono "dovute" dall'ultima volta, al massimo 3 per giro
+function Quante-Arretrate([DateTimeOffset]$Ultima, [int]$Ogni) {
+    if ($Ultima -eq [DateTimeOffset]::MinValue) { return 1 }
+    $passati = ([DateTimeOffset]::Now - $Ultima).TotalMinutes
+    return [int][Math]::Min(3, [Math]::Max(1, [Math]::Floor(($passati + 3) / $Ogni)))
+}
+
+# Sposta in avanti l'orario "in programma", cosi' i ritardi di GitHub non fanno perdere offerte
+function Avanza-Orario([DateTimeOffset]$Ultima, [int]$Ogni, [int]$Fatte) {
+    $adesso = [DateTimeOffset]::Now
+    if ($Ultima -eq [DateTimeOffset]::MinValue) { return $adesso }
+    $nuovo = $Ultima.AddMinutes($Ogni * $Fatte)
+    if ($nuovo -gt $adesso) { return $adesso }
+    if ($nuovo -lt $adesso.AddMinutes(-$Ogni)) { return $adesso.AddMinutes(-$Ogni) }   # non accumulo troppo arretrato
+    return $nuovo
+}
+
+# Sceglie e pubblica UNA offerta a rotazione. $true se ha pubblicato.
+function Una-Rotazione($Fonte, $pagine, $minimo) {
     $riserva = New-Object System.Collections.Generic.List[object]   # giochi adatti ma gia' usciti di recente
     for ($tentativo = 1; $tentativo -le 3; $tentativo++) {
         $url = [string]$pagine[$script:RotIndice % $pagine.Count]
@@ -648,7 +682,7 @@ function Giro-Rotazione($Fonte) {
         })
         $scelto = $adatti | Where-Object { -not $script:RotGiochi.ContainsKey($_.Link) } |
                   Sort-Object -Property @{ Expression = { Leggi-Numero $_.Sconto } } -Descending | Select-Object -First 1
-        if ($scelto) { Pubblica-Rotazione $Fonte $scelto 'offerta a rotazione'; return }
+        if ($scelto) { Pubblica-Rotazione $Fonte $scelto 'offerta a rotazione'; return $true }
         foreach ($g in $adatti) { $riserva.Add($g) }
         Scrivi-Log "[$($Fonte.id)] in $url nessun gioco nuovo abbastanza scontato, provo il prossimo elenco"
     }
@@ -660,9 +694,9 @@ function Giro-Rotazione($Fonte) {
             $d
         } } | Select-Object -First 1
         Pubblica-Rotazione $Fonte $scelto 'giochi nuovi finiti, ripubblico quello uscito da piu tempo'
-        return
+        return $true
     }
-    Salva-Stato
+    return $false
 }
 
 function Pubblica-Rotazione($Fonte, $Gioco, [string]$Motivo) {
@@ -670,7 +704,6 @@ function Pubblica-Rotazione($Fonte, $Gioco, [string]$Motivo) {
     $messaggio = Messaggio-Rotazione $Fonte $Gioco
     if ($Prova) { Mostra-Anteprima $messaggio; return }
     [void](Invia-Discord $messaggio)
-    $script:RotUltima = [DateTimeOffset]::Now
     $script:RotGiochi[$Gioco.Link] = [DateTimeOffset]::Now.ToString('o', $Invariante)
     Salva-Stato
 }
@@ -687,13 +720,18 @@ function Giro-VetrinaRipetuta($Fonte, $Voci) {
         Scrivi-Log ("[{0}] prossimo gioco in evidenza ripetuto tra circa {1} minuti" -f $Fonte.id, [int][Math]::Ceiling($ogni - $passati))
         return
     }
-    $voce = $voci[$script:VetIndice % $voci.Count]
-    $script:VetIndice = ($script:VetIndice + 1) % 100000
-    Scrivi-Log ("[{0}] gioco in evidenza ripetuto: {1}" -f $Fonte.id, $voce.Titolo) 'White'
-    $messaggio = Messaggio-Vetrina $Fonte $voce
-    if ($Prova) { Mostra-Anteprima $messaggio; return }
-    [void](Invia-Discord $messaggio)
-    $script:VetUltima = [DateTimeOffset]::Now
+    $quante = 1
+    if (-not $Prova) { $quante = Quante-Arretrate $script:VetUltima $ogni }
+    for ($n = 1; $n -le $quante; $n++) {
+        $voce = $voci[$script:VetIndice % $voci.Count]
+        $script:VetIndice = ($script:VetIndice + 1) % 100000
+        Scrivi-Log ("[{0}] gioco in evidenza ripetuto: {1}" -f $Fonte.id, $voce.Titolo) 'White'
+        $messaggio = Messaggio-Vetrina $Fonte $voce
+        if ($Prova) { Mostra-Anteprima $messaggio; return }
+        [void](Invia-Discord $messaggio)
+        if ($n -lt $quante) { Start-Sleep -Seconds 2 }
+    }
+    $script:VetUltima = Avanza-Orario $script:VetUltima $ogni $quante
     Salva-Stato
 }
 
