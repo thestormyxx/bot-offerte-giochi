@@ -1,0 +1,46 @@
+name: Giveaway CDKEYIT
+
+on:
+  schedule:
+    - cron: '5,35 8-22 * * *'   # ogni mezz'ora di giorno: lo script pubblica solo agli orari scelti (ora italiana)
+  workflow_dispatch:            # pulsante "Run workflow" per avviarlo a mano
+
+permissions:
+  contents: write               # serve per ricordare l'ultimo orario pubblicato
+
+concurrency:
+  group: giveaway
+  cancel-in-progress: false
+
+jobs:
+  giveaway:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Scarica i file
+        uses: actions/checkout@v4
+
+      - name: Pubblica il giveaway se e' ora
+        shell: powershell
+        env:
+          GIVEAWAY_WEBHOOK_URL: ${{ secrets.GIVEAWAY_WEBHOOK_URL }}
+        run: powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\giveaway\giveaway.ps1
+
+      - name: Ricorda l'ultimo orario pubblicato
+        if: always()
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add giveaway/giveaway-stato.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Niente da salvare"
+          else
+            git commit -m "Giveaway pubblicato"
+            for i in 1 2 3 4 5; do
+              if git pull --rebase --autostash && git push; then exit 0; fi
+              echo "Salvataggio non riuscito, riprovo tra 15 secondi ($i/5)"
+              sleep 15
+            done
+            exit 1
+          fi
