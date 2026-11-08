@@ -37,7 +37,7 @@
       "tipo": "vetrina",
       "etichetta": "⭐ IN EVIDENZA",
       "colore": "#E67E22",
-      "ripeti_ogni_minuti": 60,
+      "ripeti_ogni_minuti": 240,
       "indirizzo": "https://www.allkeyshop.com/blog/"
     },
     {
@@ -54,7 +54,7 @@
       "tipo": "rotazione",
       "etichetta": "🔥 OFFERTA DEL MOMENTO",
       "colore": "#E74C3C",
-      "ogni_minuti": 30,
+      "ogni_minuti": 120,
       "sconto_minimo": 25,
       "ripeti_dopo_giorni": 7,
       "pagine": [
