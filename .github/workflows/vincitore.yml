@@ -1,0 +1,122 @@
+name: Annuncia vincitore giveaway
+
+# Pulsante "Run workflow": scrivi il nome del vincitore e il bot "Giveaway CDKEY"
+# lo annuncia nel canale del giveaway (stesso webhook GIVEAWAY_WEBHOOK_URL dell'invito).
+on:
+  workflow_dispatch:
+    inputs:
+      vincitore:
+        description: 'Nome del vincitore (come appare su CDKeyIt)'
+        required: true
+        type: string
+      premio:
+        description: 'Premio vinto (facoltativo, puoi lasciarlo vuoto)'
+        required: false
+        type: string
+      link:
+        description: 'Link del giveaway (facoltativo)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vincitore
+  cancel-in-progress: false
+
+jobs:
+  annuncia:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Scarica i file
+        uses: actions/checkout@v4
+
+      - name: Pubblica il vincitore su Discord
+        shell: pwsh
+        env:
+          GIVEAWAY_WEBHOOK_URL: ${{ secrets.GIVEAWAY_WEBHOOK_URL }}
+          VINCITORE: ${{ inputs.vincitore }}
+          PREMIO: ${{ inputs.premio }}
+          LINK: ${{ inputs.link }}
+          # ---- TESTO DELL'ANNUNCIO: puoi cambiarlo qui ----
+          # {vincitore}, {premio} e {link} vengono sostituiti da soli.
+          # Le righe del premio e del link compaiono solo se li scrivi.
+          TITOLO: '🏆 **VINCITORE GIVEAWAY CDKEYIT** 🏆'
+          RIGA_VINCITORE: 'Complimenti a **{vincitore}**! 🎉'
+          RIGA_PREMIO: '🎁 Premio: **{premio}**'
+          RIGA_LINK: '🔗 Giveaway: {link}'
+          CHIUSURA: 'Controlla il tuo profilo CDKeyIt per ritirare il premio. Al prossimo giveaway! 🍀'
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $url = ([string]$env:GIVEAWAY_WEBHOOK_URL).Trim()
+          if ($url -notmatch '^https://(ptb\.|canary\.)?discord(app)?\.com/api/webhooks/\d+/[\w-]+') {
+              Write-Output 'Manca il segreto GIVEAWAY_WEBHOOK_URL (o non contiene un link di webhook valido): aggiungilo in Settings > Secrets and variables > Actions.'
+              exit 1
+          }
+
+          # Toglie a capo e spazi doppi, accorcia, e disattiva la formattazione Discord dentro al testo
+          function Pulisci([string]$Testo, [int]$Massimo) {
+              $t = ($Testo -replace '\s+', ' ').Trim()
+              if ($t.Length -gt $Massimo) { $t = $t.Substring(0, $Massimo).Trim() }
+              return ($t -replace '([\\*_~`|>])', '\$1')
+          }
+
+          $vincitore = Pulisci $env:VINCITORE 80
+          if (-not $vincitore) { Write-Output 'Scrivi il nome del vincitore.'; exit 1 }
+          $premio = Pulisci $env:PREMIO 120
+
+          $link = ([string]$env:LINK).Trim()
+          if ($link -and ($link -notmatch '^https://\S+$' -or $link.Length -gt 300)) {
+              Write-Output 'Il link deve iniziare con https:// e non avere spazi.'
+              exit 1
+          }
+
+          $righe = @($env:TITOLO, $env:RIGA_VINCITORE.Replace('{vincitore}', $vincitore))
+          if ($premio) { $righe += $env:RIGA_PREMIO.Replace('{premio}', $premio) }
+          if ($link)   { $righe += $env:RIGA_LINK.Replace('{link}', $link) }
+          $righe += ''
+          $righe += $env:CHIUSURA
+          $contenuto = ($righe -join "`n").Trim()
+
+          # Nessun tag: anche se nel nome c'e' una @ non viene avvisato nessuno
+          $dati = @{ content = $contenuto; allowed_mentions = @{ parse = @() } }
+
+          # Stesso nome e immagine del bot dell'invito (giveaway-config.json)
+          $fileConfig = 'giveaway/giveaway-config.json'
+          if (Test-Path $fileConfig) {
+              try {
+                  $config = Get-Content $fileConfig -Raw -Encoding utf8 | ConvertFrom-Json
+                  if (([string]$config.nomeBot).Trim())   { $dati.username   = ([string]$config.nomeBot).Trim() }
+                  if (([string]$config.avatarUrl).Trim()) { $dati.avatar_url = ([string]$config.avatarUrl).Trim() }
+              } catch {
+                  Write-Output 'giveaway-config.json non leggibile: uso il nome e l''immagine del webhook.'
+              }
+          }
+
+          $json  = $dati | ConvertTo-Json -Depth 5 -Compress
+          $corpo = [Text.Encoding]::UTF8.GetBytes($json)
+
+          for ($tentativo = 1; $tentativo -le 3; $tentativo++) {
+              try {
+                  Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json; charset=utf-8' -Body $corpo -TimeoutSec 30 | Out-Null
+                  Write-Output "Vincitore annunciato su Discord: $vincitore"
+                  exit 0
+              } catch {
+                  $codice = 0
+                  if ($_.Exception.Response) { $codice = [int]$_.Exception.Response.StatusCode }
+                  if ($codice -in 401, 403, 404) {
+                      Write-Output "Il link del webhook non funziona (errore $codice): forse e' stato eliminato. Aggiorna il segreto GIVEAWAY_WEBHOOK_URL."
+                      exit 1
+                  }
+                  if ($codice -eq 400) {
+                      Write-Output "Discord ha rifiutato il messaggio: $($_.ErrorDetails.Message)"
+                      exit 1
+                  }
+                  Write-Output "Invio non riuscito (tentativo $tentativo di 3): $($_.Exception.Message)"
+                  Start-Sleep -Seconds (5 * $tentativo)
+              }
+          }
+          exit 1
